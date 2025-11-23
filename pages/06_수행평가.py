@@ -1,105 +1,73 @@
+# File: pages/osaka_food_map.py
+# Streamlit + Folium map showing Osaka Top10 local-favorite restaurants
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import os
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 
-def load_data(file_path):
-    """CSV 파일을 로드하고 '연월일'을 datetime으로 변환합니다."""
-    try:
-        # 파일 인코딩 문제로 'cp949' 또는 'euc-kr' 시도
-        df = pd.read_csv(file_path, encoding='euc-kr')
-        
-        # '연월일' 열을 datetime 객체로 변환
-        df['연월일'] = pd.to_datetime(df['연월일'])
-        
-        return df
-    except Exception as e:
-        st.error(f"데이터 로딩 중 오류 발생: {e}")
-        return None
+st.set_page_config(page_title="Osaka Top10 Local Eats (Folium)", layout="wide")
 
-def preprocess_data(df):
-    """대륙별 중량(톤) 데이터를 추출하고 합계를 계산합니다."""
-    
-    # '중량(톤)'으로 끝나는 열만 필터링 (총합 제외)
-    weight_cols = [col for col in df.columns if col.endswith('_중량(톤)') and not col.endswith('합계_중량(톤)')]
-    
-    # 열 이름에서 '중량(톤)'을 제거하고 대륙 이름만 남깁니다.
-    continent_cols = {col: col.split('_')[1] for col in weight_cols}
-    
-    # 중량 데이터프레임 생성 및 열 이름 변경
-    df_weight = df[weight_cols].rename(columns=continent_cols)
-    
-    # 각 대륙별 총합 계산
-    continent_sums = df_weight.sum().sort_values(ascending=False).reset_index()
-    continent_sums.columns = ['대륙', '총 수입 중량(톤)']
-    
-    return continent_sums
+st.title("🍜 Osaka — Locals' Top 10 Eats (Folium map)")
+st.markdown(
+    "이 지도는 여러 여행 가이드·리뷰(로컬/트립어드바이저 등)를 바탕으로 '오사카 현지/로컬에게 인기 있는' 맛집 후보 Top10을 표시합니다. "
+    "좌표는 공개 정보를 바탕으로 근사값을 사용했습니다. 방문 전 최신 정보를 반드시 확인하세요."
+)
 
-def create_bar_chart(df):
-    """Plotly를 사용하여 인터랙티브한 막대 그래프를 생성합니다."""
-    
-    # 1위 대륙 확인
-    top_continent = df.iloc[0]['대륙']
-    
-    # 색상 맵 생성: 1위는 초록색, 나머지는 파란색 계열 그라데이션
-    color_map = {continent: '#3cb371' if continent == top_continent else '#4682b4' for continent in df['대륙']}
-    
-    # Plotly 막대 그래프 생성
-    fig = px.bar(
-        df, 
-        x='대륙', 
-        y='총 수입 중량(톤)', 
-        title='🇰🇷 한국의 대륙별 천연가스 총 수입 중량 (톤)',
-        color='대륙', # 색상을 대륙별로 적용
-        color_discrete_map=color_map,
-        labels={'총 수입 중량(톤)': '총 수입 중량 (톤)', '대륙': '대륙'},
-        template='plotly_white'
-    )
-    
-    # y축 포맷 변경 (10억 단위로)
-    fig.update_yaxes(tickformat=',.2s', title='총 수입 중량 (톤)')
-    
-    # 막대 위에 값 표시
-    fig.update_traces(texttemplate='%{y:.2s}', textposition='outside')
-    fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
-    
-    return fig
+# --- Top10 리스트 (이름, 위도, 경도, 설명, 출처) ---
+# 좌표는 공개 출처(관광 가이드/업체 페이지 등)를 참고해 근사값으로 기입했습니다.
+places = [
+    {"name": "Mizuno (Okonomiyaki, Dotonbori)", "lat": 34.66909, "lon": 135.50104,
+     "desc": "오사카 명물 오코노미야키(미즈노, 도톤보리)", "source":"https://insideosaka.com/mizuno/"},
+    {"name": "Kushikatsu Daruma (Shinsekai)", "lat": 34.65250, "lon": 135.50630,
+     "desc": "신세카이의 전통 쿠시카츠 명소(다루마)", "source":"https://www.gltjp.com/en/directory/item/11883/"},
+    {"name": "Takoyaki Wanaka (Dotonbori / Namba)", "lat": 34.66885, "lon": 135.50130,
+     "desc": "나니와 스타일의 인기 타코야키(와나카)", "source":"https://metronine.osaka/en/kiosk/spot-detail/?spot_id=16385150523118"},
+    {"name": "Kani Doraku (Dotonbori, Crab specialty)", "lat": 34.66887, "lon": 135.50140,
+     "desc": "도톤보리의 상징적 게 전문점(간이도라쿠)", "source":"https://douraku.co.jp/en/search/"},
+    {"name": "Endo Sushi (Osaka Central Fish Market / Kyobashi branch)", "lat": 34.66590, "lon": 135.49400,
+     "desc": "오사카 중앙 어시장의 전통 초밥집(엔도스시)", "source":"http://www.endo-sushi.com/english"},
+    {"name": "Kuromon Ichiba Market (street stalls & local eats)", "lat": 34.66531, "lon": 135.50701,
+     "desc": "쿠로몬 시장 — 현지식 포장·스낵 명소", "source":"https://matcha-jp.com/en/8236"},
+    {"name": "Ichiran (Dotonbori ramen / popular ramen chain branch)", "lat": 34.66870, "lon": 135.50110,
+     "desc": "개별 부스형 라멘 체인(잇쵸란 도톤보리 지점)", "source":"https://ichiran.com/"},
+    {"name": "Izakaya Toyo (Toyo-san, Kyobashi area)", "lat": 34.69720, "lon": 135.53513,
+     "desc": "지역에서 유명한 즉석 이자카야(토요)", "source":"https://en.tobacco.tokyo/osaka-fu/osaka-shi-miyakojima-ku/higashinodamachi-3/night/1u7t"},
+    {"name": "Kawafuku Honten (Handmade udon, Shinsaibashi)", "lat": 34.67289, "lon": 135.50342,
+     "desc": "수타 우동의 고향격 가게(카와후쿠 본점)", "source":"https://www.osaka-kawafuku.com/kawafuku/"},
+    {"name": "ChaoChao Gyoza (popular gyoza shop)", "lat": 34.67180, "lon": 135.50210,
+     "desc": "현지에서 사랑받는 작은 교자 가게(챠오챠오)", "source":"https://ilseonthego.com/best-cheap-eats-osaka/"}
+]
 
-# Streamlit 앱 시작
-def main():
-    st.set_page_config(layout="wide", page_title="천연가스 수입 분석")
-    st.title("🚢 한국 천연가스 대륙별 수입 현황 분석")
-    st.write("---")
-    
-    # CSV 파일 경로 설정 (pages 폴더 기준 상위 폴더)
-    current_dir = os.path.dirname(__file__)
-    csv_path = os.path.join(current_dir, '..', '한국가스공사_한국의 대륙별 천연가스 수입 현황_20240630.csv')
-    
-    df = load_data(csv_path)
-    
-    if df is not None:
-        st.subheader("1. 전체 기간 대륙별 총 수입량")
-        
-        continent_sums_df = preprocess_data(df)
-        
-        # 데이터 테이블 출력
-        st.dataframe(
-            continent_sums_df, 
-            hide_index=True,
-            column_config={
-                "총 수입 중량(톤)": st.column_config.NumberColumn(
-                    "총 수입 중량 (톤)",
-                    format="%d"
-                )
-            }
-        )
-        
-        # 막대 그래프 시각화
-        st.subheader("2. 수입량 시각화 (막대 그래프)")
-        fig = create_bar_chart(continent_sums_df)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.caption(f"데이터 기간: {df['연월일'].min().strftime('%Y년 %m월')} ~ {df['연월일'].max().strftime('%Y년 %m월')}")
-        
-if __name__ == '__main__':
-    main()
+# --- Map 기본 설정: 오사카 중심 좌표와 줌 레벨 ---
+# 중심은 도톤보리/난바 근처로 설정
+map_center = [34.6687, 135.5013]
+m = folium.Map(location=map_center, zoom_start=13, tiles="OpenStreetMap")
+
+# Add marker cluster
+marker_cluster = MarkerCluster().add_to(m)
+
+# Add markers with popups
+for p in places:
+    popup_html = f"""
+    <b>{p['name']}</b><br/>
+    {p['desc']}<br/>
+    <a href="{p['source']}" target="_blank">출처 열기</a>
+    """
+    folium.Marker(
+        location=[p['lat'], p['lon']],
+        popup=folium.Popup(popup_html, max_width=300),
+        tooltip=p['name'],
+        icon=folium.Icon(color="green", icon="cutlery", prefix='fa')
+    ).add_to(marker_cluster)
+
+# 추가: 중심 마커(도톤보리)
+folium.CircleMarker(location=map_center, radius=6, color="crimson", fill=True, fill_opacity=0.7,
+                    popup="도톤보리 근처 (지도 중심)").add_to(m)
+
+# Streamlit에 Folium 지도 표시 (streamlit_folium 사용)
+st.subheader("오사카 Top10 음식 지도 (현지/인기 기반 후보)")
+map_out = st_folium(m, width=1100, height=700)
+
+st.markdown("**참고 및 주의**: 위 리스트는 여행/맛집 가이드·리뷰(로컬 추천 포함)를 바탕으로 선정한 후보입니다. 실제 영업상황·휴무·위치 변경 가능성이 있으니 방문 전 반드시 공식 사이트/지도/업체에 확인하세요.")
+st.markdown("핵심 출처 예시: Mizuno(도톤보리), Kushikatsu Daruma(신세카이), Takoyaki Wanaka, Endo Sushi, Kuromon Ichiba 등. (앱 내 개별 마커에 출처 링크 포함).")
